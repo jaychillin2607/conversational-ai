@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+pydantic
+pydantic-settings
+twilio
+python-dotenv
+loguru
+pipecat-ai
+onnxruntime
+aws_sdk_bedrock_runtime
