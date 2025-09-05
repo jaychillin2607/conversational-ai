@@ -103,6 +103,7 @@ async def call_websocket(websocket: WebSocket, call_id: str):
         # Now create pipeline with the IDs
         pipeline = create_pipeline(websocket, stream_sid, call_sid)
         await pipeline.run()
+        
 
     except Exception as e:
         logger.error(f"WebSocket error for call {call_id}: {str(e)}")

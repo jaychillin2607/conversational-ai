@@ -15,9 +15,20 @@ from pipecat.transports.websocket.fastapi import (
 
 from config import get_settings
 
-SYSTEM_PROMPT = """You are a helpful AI assistant. Have a natural conversation with the caller.
-Keep responses concise and engaging. Ask follow-up questions to keep the conversation flowing.
-Be friendly and professional in all interactions."""
+SYSTEM_PROMPT = """You are a helpful AI assistant making outbound calls. 
+
+IMPORTANT: When the call starts, immediately introduce yourself in a friendly, professional manner. 
+Say something like: "Hi! This is your AI assistant. I'm calling to see if there's anything I can help you with today."
+
+After your introduction:
+- Ask what they might need assistance with
+- Keep responses concise and engaging (2-3 sentences max)
+- Ask follow-up questions to keep the conversation flowing
+- Be friendly and professional in all interactions
+- If they don't need anything, politely thank them and end the call
+- If they seem confused about why you're calling, explain you're a helpful AI assistant
+
+Remember to speak naturally and conversationally. Don't be overly formal."""
 
 
 class CallPipeline:
@@ -27,6 +38,7 @@ class CallPipeline:
         self.call_sid = call_sid
         self.settings = get_settings()
         self.task = None
+        self.context = None  # Store context reference
 
     async def run(self):
         transport = FastAPIWebsocketTransport(
@@ -53,11 +65,12 @@ class CallPipeline:
             voice_id="matthew"
         )
 
-        context = OpenAILLMContext(
+        # Store context reference so we can modify it in event handlers
+        self.context = OpenAILLMContext(
             messages=[{"role": "system", "content": SYSTEM_PROMPT}]
         )
 
-        context_aggregator = llm.create_context_aggregator(context)
+        context_aggregator = llm.create_context_aggregator(self.context)
 
         pipeline = Pipeline([
             transport.input(),
@@ -77,9 +90,25 @@ class CallPipeline:
 
         @transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
-            logger.info("Client connected to pipeline")
+            logger.info("Client connected to pipeline - triggering AI introduction")
+            
+            # Add an initial user message to trigger the AI introduction
+            # This simulates the user saying "hello" when they pick up
+            initial_trigger = {
+                "role": "user", 
+                "content": "Hello, I just answered the phone."
+            }
+            
+            # Add the trigger message to context
+            self.context.add_message(initial_trigger)
+            
+            # Queue the updated context frame
             await self.task.queue_frames([context_aggregator.user().get_context_frame()])
+            
+            # Trigger the AI to respond (this should make it introduce itself)
             await llm.trigger_assistant_response()
+            
+            logger.info("AI introduction sequence initiated")
 
         @transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(transport, client):
