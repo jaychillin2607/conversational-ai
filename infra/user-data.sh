@@ -6,28 +6,37 @@ set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 echo "Starting user-data script at $(date)"
 
-# Update system
+# Update system first
+echo "Updating system packages..."
 yum update -y
 
-# Install Python 3.12
-yum install -y python3 python3-pip python3-venv
-
-# Install Node.js 18.x (for React build)
-curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-yum install -y nodejs
-
-# Install nginx
-amazon-linux-extras install nginx1 -y
-
-# Install git and other tools
+# Install basic tools first
+echo "Installing basic tools..."
 yum install -y git htop curl wget
 
+# Install Python 3 (use what's available in Amazon Linux 2)
+echo "Installing Python..."
+yum install -y python3 python3-pip
+
+# Install Node.js using Amazon Linux Extras (more compatible)
+echo "Installing Node.js..."
+amazon-linux-extras install nodejs18 -y
+
+# Verify Node.js installation
+node --version
+npm --version
+
+# Install nginx
+echo "Installing nginx..."
+amazon-linux-extras install nginx1 -y
+
 # Create application directory
+echo "Setting up application directories..."
 mkdir -p /opt/voice-agent
 mkdir -p /var/log/voice-agent
 
 # Create voice-agent user for running the service
-useradd -r -s /bin/false voice-agent
+useradd -r -s /bin/false voice-agent || echo "User already exists"
 usermod -a -G voice-agent ec2-user
 
 # Set permissions
@@ -35,6 +44,7 @@ chown -R voice-agent:voice-agent /opt/voice-agent
 chown -R voice-agent:voice-agent /var/log/voice-agent
 
 # Configure nginx
+echo "Configuring nginx..."
 cat > /etc/nginx/conf.d/voice-agent.conf << 'EOF'
 server {
     listen 80;
@@ -95,7 +105,11 @@ EOF
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 rm -f /etc/nginx/conf.d/default.conf 2>/dev/null || true
 
+# Test nginx config
+nginx -t
+
 # Create systemd service for the voice agent backend
+echo "Creating systemd service..."
 cat > /etc/systemd/system/voice-agent.service << 'EOF'
 [Unit]
 Description=AI Voice Agent FastAPI Backend
