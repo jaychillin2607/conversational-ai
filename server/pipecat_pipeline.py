@@ -57,13 +57,15 @@ class CallPipeline:
             )
         )
 
-        llm = AWSNovaSonicLLMService(
-            secret_access_key=self.settings.AWS_SECRET_ACCESS_KEY,
-            access_key_id=self.settings.AWS_ACCESS_KEY_ID,
-            session_token=self.settings.AWS_SESSION_TOKEN,
-            region=self.settings.AWS_REGION,
-            voice_id="matthew"
-        )
+        kwargs = {"region": self.settings.AWS_REGION, "voice_id": "matthew"}
+
+        if self.settings.AWS_ACCESS_KEY_ID:
+            kwargs.update({
+                "access_key_id": self.settings.AWS_ACCESS_KEY_ID,
+                "secret_access_key": self.settings.AWS_SECRET_ACCESS_KEY,
+                "session_token": self.settings.AWS_SESSION_TOKEN,
+            })
+        llm = AWSNovaSonicLLMService(**kwargs)
 
         # Store context reference so we can modify it in event handlers
         self.context = OpenAILLMContext(
@@ -90,24 +92,25 @@ class CallPipeline:
 
         @transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
-            logger.info("Client connected to pipeline - triggering AI introduction")
-            
+            logger.info(
+                "Client connected to pipeline - triggering AI introduction")
+
             # Add an initial user message to trigger the AI introduction
             # This simulates the user saying "hello" when they pick up
             initial_trigger = {
-                "role": "user", 
+                "role": "user",
                 "content": "Hello, I just answered the phone."
             }
-            
+
             # Add the trigger message to context
             self.context.add_message(initial_trigger)
-            
+
             # Queue the updated context frame
             await self.task.queue_frames([context_aggregator.user().get_context_frame()])
-            
+
             # Trigger the AI to respond (this should make it introduce itself)
             await llm.trigger_assistant_response()
-            
+
             logger.info("AI introduction sequence initiated")
 
         @transport.event_handler("on_client_disconnected")
