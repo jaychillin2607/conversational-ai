@@ -1,131 +1,98 @@
 #!/bin/bash
+# scripts/deploy.sh - Simple deployment with Twilio creds
 
 set -e
 
-echo "🚀 Starting AI Voice Agent deployment with Docker..."
+echo "🚀 Deploying AI Voice Agent..."
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-# Get GitHub repository URL
-echo "📝 Please enter your GitHub repository URL:"
+# Get repo URL
+echo "📝 GitHub repository URL:"
 read -p "Repository URL: " GITHUB_REPO
 
 if [ -z "$GITHUB_REPO" ]; then
-    echo -e "${RED}❌ Repository URL is required!${NC}"
+    echo "❌ Repository URL required!"
     exit 1
 fi
 
-echo "📝 Enter branch name (default: main):"
-read -p "Branch: " GITHUB_BRANCH
-GITHUB_BRANCH=${GITHUB_BRANCH:-main}
+# Get Twilio credentials
+echo ""
+echo "📞 Twilio Configuration:"
+read -p "Twilio Account SID: " TWILIO_ACCOUNT_SID
+read -p "Twilio Auth Token: " TWILIO_AUTH_TOKEN
+read -p "Twilio Phone Number (with +): " TWILIO_PHONE_NUMBER
 
-if [ ! -f "terraform.tfvars" ]; then
-    echo -e "${RED}❌ terraform.tfvars not found!${NC}"
+if [ -z "$TWILIO_ACCOUNT_SID" ] || [ -z "$TWILIO_AUTH_TOKEN" ] || [ -z "$TWILIO_PHONE_NUMBER" ]; then
+    echo "❌ All Twilio credentials are required!"
     exit 1
 fi
 
-echo "📋 Initializing Terraform..."
+# Deploy infrastructure
+echo "🏗️ Creating infrastructure..."
 terraform init
-
-echo "🔍 Planning infrastructure..."
-terraform plan
-
-echo "🏗️  Creating infrastructure..."
 terraform apply -auto-approve
 
 INSTANCE_IP=$(terraform output -raw instance_public_ip)
-echo -e "${GREEN}✅ Infrastructure created! Instance IP: ${INSTANCE_IP}${NC}"
-
-echo "⏳ Waiting for instance to be ready..."
-sleep 90
+echo "✅ Instance IP: $INSTANCE_IP"
 
 # Wait for SSH
-echo "🔌 Waiting for SSH connection..."
-for i in {1..30}; do
-    if nc -z $INSTANCE_IP 22; then
-        echo "SSH is ready!"
-        break
-    fi
-    echo "Attempt $i/30: Still waiting for SSH..."
-    sleep 10
-done
+echo "⏳ Waiting for SSH..."
+sleep 60
+while ! nc -z $INSTANCE_IP 22; do sleep 10; done
 
-# Check user-data completion
-echo "🔍 Waiting for initialization..."
-ssh -i ~/.ssh/voice-agent-key -o StrictHostKeyChecking=no ec2-user@$INSTANCE_IP << 'ENDSSH'
-    for i in {1..20}; do
-        if [ -f /var/log/user-data.log ] && grep -q "User-data script completed" /var/log/user-data.log; then
-            echo "✅ User-data completed!"
-            break
-        elif [ -f /var/log/user-data.log ] && grep -q -E "error|Error|failed|Failed" /var/log/user-data.log; then
-            echo "❌ User-data failed!"
-            tail -20 /var/log/user-data.log
-            exit 1
-        else
-            echo "⏳ Waiting... ($i/20)"
-            sleep 30
-        fi
-    done
-ENDSSH
-
-echo "📥 Deploying application with Docker..."
+# Deploy app
+echo "📦 Deploying application..."
 ssh -i ~/.ssh/voice-agent-key -o StrictHostKeyChecking=no ec2-user@$INSTANCE_IP << ENDSSH
-    # Clone repository
-    cd /opt/voice-agent
-    sudo git clone -b $GITHUB_BRANCH $GITHUB_REPO .
+    # Wait for Docker
+    while ! docker ps &>/dev/null; do sleep 5; done
+    
+    # Clone and build
+    git clone $GITHUB_REPO app
+    cd app
     
     # Get public IP
     PUBLIC_IP=\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
     
-    # Update docker-compose.yml with real IP
-    sudo sed -i "s/PUBLIC_IP_PLACEHOLDER/\$PUBLIC_IP/g" docker-compose.yml
+    # Build backend
+    cd server
+    docker build -t voice-backend .
     
-    # Create .env file
-    cat > .env << EOF
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_PHONE_NUMBER=
-AWS_DEFAULT_REGION=us-east-1
-SERVER_URL=http://\$PUBLIC_IP
-SERVER_HOST=\$PUBLIC_IP
-VITE_API_URL=http://\$PUBLIC_IP:8000
-EOF
+    # Build frontend with API URL
+    cd ../frontend
+    echo "VITE_API_URL=http://\$PUBLIC_IP:8000" > .env
+    docker build -t voice-frontend .
     
-    # Set permissions
-    sudo chown -R voice-agent:voice-agent /opt/voice-agent
+    # Run backend with all environment variables
+    docker run -d --name backend -p 8000:8000 \
+        -e AWS_DEFAULT_REGION=us-east-1 \
+        -e TWILIO_ACCOUNT_SID=$TWILIO_ACCOUNT_SID \
+        -e TWILIO_AUTH_TOKEN=$TWILIO_AUTH_TOKEN \
+        -e TWILIO_PHONE_NUMBER=$TWILIO_PHONE_NUMBER \
+        -e SERVER_URL=http://\$PUBLIC_IP \
+        -e SERVER_HOST=\$PUBLIC_IP \
+        --restart unless-stopped \
+        voice-backend
     
-    # Build and start containers
-    echo "🐳 Building Docker containers..."
-    sudo -u voice-agent docker-compose build
+    # Run frontend
+    docker run -d --name frontend -p 80:80 \
+        --restart unless-stopped \
+        voice-frontend
     
-    echo "🚀 Starting services..."
-    sudo systemctl daemon-reload
-    sudo systemctl enable voice-agent
-    sudo systemctl start voice-agent
-    sudo systemctl start nginx
+    echo "✅ Containers running!"
+    docker ps
     
-    # Wait a moment and check status
-    sleep 10
-    /opt/voice-agent/status.sh
+    # Test backend health
+    sleep 5
+    curl -f http://localhost:8000/health && echo "✅ Backend healthy!" || echo "❌ Backend not responding"
 ENDSSH
 
-echo -e "${GREEN}🎉 Deployment completed!${NC}"
+echo "🎉 Deployment Complete!"
 echo ""
-echo "📱 Your application:"
+echo "📱 Your Application:"
 echo "   Frontend: http://$INSTANCE_IP"
 echo "   Backend:  http://$INSTANCE_IP:8000"
 echo "   Health:   http://$INSTANCE_IP:8000/health"
 echo ""
-echo "📝 Next: Add your Twilio credentials:"
+echo "🔍 Debug commands:"
 echo "   ssh -i ~/.ssh/voice-agent-key ec2-user@$INSTANCE_IP"
-echo "   sudo nano /opt/voice-agent/.env"
-echo "   cd /opt/voice-agent && sudo -u voice-agent docker-compose restart"
-echo ""
-echo "🔍 Monitor:"
-echo "   ssh -i ~/.ssh/voice-agent-key ec2-user@$INSTANCE_IP"
-echo "   /opt/voice-agent/status.sh"
-echo "   /opt/voice-agent/logs.sh"
+echo "   docker logs backend"
+echo "   docker logs frontend"

@@ -5,7 +5,7 @@ aws_region = "us-east-1"
 environment = "dev"
 
 # EC2 Configuration
-instance_type = "t2.small"
+instance_type = "t2.medium"
 
 # SSH Public Key (required)
 # Generate with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/voice-agent-key
